@@ -8,6 +8,7 @@ __all__ = (
     "GetBulkRequest",
     "SetRequest",
     "SnmpResponse",
+    "SnmpV1TrapMessage",
     "SnmpV2TrapMessage",
 )
 
@@ -16,8 +17,8 @@ import ipaddress
 import random
 from typing import List, Optional, Union
 
-from .asn1 import Class, Number
-from .asn1_rust import Decoder, Encoder
+from asn1 import Class, Number
+from asn1_rust import Decoder, Encoder
 
 
 class SnmpVersion(enum.IntEnum):
@@ -146,6 +147,10 @@ class GetBulkRequest(BulkPDU):
     _PDUType: PDUType = PDUType.GetBulkRequest
 
 
+class SnmpV1Trap(PDU):
+    _PDUType: PDUType = PDUType.SNMPv1Trap
+
+
 class SnmpV2Trap(PDU):
     _PDUType: PDUType = PDUType.SNMPv2Trap
 
@@ -209,6 +214,78 @@ class SnmpResponse(SnmpMessage):
         decoder.exit()  # 1
 
         response = GetResponse(varbinds)
+        response.request_id = request_id
+        response.error_status = error_status
+        response.error_index = error_index
+        return cls(version, community, response)
+
+
+class SnmpV1TrapMessage:
+    __slots__ = ("_version", "_community", "_data")
+
+    def __init__(self, version: SnmpVersion, community: str, data: PDU) -> None:
+        self._version: SnmpVersion = version
+        self._community: str = community
+        self._data: PDU = data
+
+    @property
+    def version(self) -> SnmpVersion:
+        """Returns version of the message"""
+        return self._version
+
+    @property
+    def community(self) -> str:
+        """Returns community of the message"""
+        return self._community
+
+    @property
+    def data(self) -> PDU:
+        """Returns :class:`protocol data unit <PDU>` of the message"""
+        return self._data
+
+    @classmethod
+    def decode(cls, data: bytes) -> Optional["SnmpV1TrapMessage"]:
+        decoder = Decoder(data)
+        decoder.enter()  # 1
+        tag, value = decoder.read()
+        version = SnmpVersion(value)
+        if version != SnmpVersion.v1:
+            return None
+
+        tag, value = decoder.read()
+        community = value.decode()
+
+        tag = decoder.peek()
+        if tag.cls != Class.Context or tag.number != PDUType.SNMPv2Trap:
+            return None
+
+        decoder.enter()  # 2
+        tag, value = decoder.read()
+        request_id = value
+
+        tag, value = decoder.read()
+        error_status = value
+
+        tag, value = decoder.read()
+        error_index = value
+
+        decoder.enter()  # 3
+        varbinds: List[SnmpVarbind] = []
+        while not decoder.eof():
+            decoder.enter()  # 4
+            _, value = decoder.read()
+            oid = value
+            _, value = decoder.read()
+            varbinds.append(SnmpVarbind(oid, value))
+            decoder.exit()  # 4
+
+        decoder.exit()  # 3
+
+        decoder.exit()  # 2
+
+        decoder.exit()  # 1
+
+        response = SnmpV2Trap(varbinds)
         response.request_id = request_id
         response.error_status = error_status
         response.error_index = error_index

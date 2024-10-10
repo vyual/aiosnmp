@@ -24,7 +24,7 @@ from .exceptions import (
     SnmpTimeoutError,
 )
 from .log import logger
-from .message import PDU, SnmpMessage, SnmpResponse, SnmpV2TrapMessage, SnmpVarbind
+from .message import PDU, SnmpMessage, SnmpResponse, SnmpV1TrapMessage, SnmpV2TrapMessage, SnmpVarbind
 
 _ERROR_STATUS_TO_EXCEPTION = {
     1: SnmpErrorTooBig,
@@ -51,7 +51,36 @@ Address = Union[Tuple[str, int], Tuple[str, int, int, int]]
 RequestsKey = Union[Tuple[str, int, int], int]
 
 
-class SnmpTrapProtocol(asyncio.DatagramProtocol):
+class SnmpTrapV1Protocol(asyncio.DatagramProtocol):
+    __slots__ = ("loop", "transport", "communities", "handler")
+
+    def __init__(self, communities: Optional[Set[str]], handler: Callable) -> None:
+        self.loop: asyncio.AbstractEventLoop = asyncio.get_event_loop()
+        self.communities: Optional[Set[str]] = communities
+        self.handler: Callable = handler
+
+    def connection_made(self, transport: asyncio.BaseTransport) -> None:
+        self.transport = cast(asyncio.DatagramTransport, transport)
+
+    def datagram_received(self, data: Union[bytes, Text], addr: Address) -> None:
+        host, port = addr[0], addr[1]
+
+        if isinstance(data, Text):
+            logger.warning(f"received data from {host}:{port} should be bytes")
+            return
+
+        try:
+            message = SnmpV1TrapMessage.decode(data)
+        except Error as exc:
+            logger.warning(f"could not decode received data from {host}:{port}: {exc}")
+            return
+
+        if not message or (self.communities and message._community not in self.communities):
+            return
+        asyncio.ensure_future(self.handler(host, port, message))
+
+
+class SnmpTrapV2Protocol(asyncio.DatagramProtocol):
     __slots__ = ("loop", "transport", "communities", "handler")
 
     def __init__(self, communities: Optional[Set[str]], handler: Callable) -> None:
